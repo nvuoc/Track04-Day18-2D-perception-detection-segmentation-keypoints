@@ -1,0 +1,271 @@
+Trong bài thực hành cá nhân này, bạn hoàn thành lab_2d_perception_student.ipynb: đếm người bằng detector, tạo nhãn segmentation, đọc tư thế qua keypoint và fine-tune mô hình trên tiger-pose. Sản phẩm cuối gồm notebook còn nguyên output và thư mục submission/ do notebook tạo. Bạn chỉ nộp URL repo GitHub public vào VLearn. Bổ sung link notebook đã chạy vào báo cáo trong submission/ theo hướng dẫn cuối bài.
+
+Nguồn bài học là repo chính thức của giảng viên, nhánh main. Mở README, notebook học viên và rubric khi cần đối chiếu. Bài dành 120 phút cho Phần 0–4: lần lượt 10, 35, 30, 25 và 20 phút. Các mục có dấu ⭐ là tùy chọn.
+
+Bạn cần tài khoản để lưu notebook vào Google Drive, chạy Colab với GPU T4 và đưa bài lên GitHub public. Notebook tự tải weights và dataset, tổng khoảng 0,8 GB; không cần API key hay tự chuẩn bị dữ liệu.
+
+    1. Mở notebook trực tiếp trên Colab. Chọn File → Save a copy in Drive và làm trên bản sao của mình. Nếu link không mở được, tải .ipynb từ repo rồi dùng File → Upload notebook trên Colab.
+    2. Chọn Runtime → Change runtime type → T4 GPU. GPU cần cho kết quả fine-tune được dùng để nộp.
+    3. Trong Phần 0 — Setup, chạy lần lượt năm ô: cài thư viện, import, hàm tiện ích, tải dữ liệu và hiển thị ảnh. Ô đầu đã có lệnh dưới đây; chạy ngay trong notebook.
+
+%pip install -q "ultralytics==8.4.171"
+
+Chép
+
+    1. Kiểm tra output trước khi sang Phần 1: có device = cuda, dòng 🔧 Sẵn sàng: ..., chín dấu ✓ tải tài nguyên và hai ảnh bus.jpg, zidane.jpg.
+
+Nếu thấy device = cpu, bật lại T4 và chạy lại từ đầu. Chế độ CPU tự giảm fine-tune xuống 3 epoch, không đáp ứng yêu cầu nộp của repo. Nếu tải tài nguyên lỗi mạng, chạy lại ô tải; các file đã tải xong được giữ lại.
+
+Đọc output detector, hoàn thành NMS và đo latency
+
+Bạn đang ở Phần 1 — Object Detection, dùng ảnh bus.jpg. Để đếm người, bạn cần hiểu mỗi dòng dự đoán biểu diễn gì và vì sao một người có thể nhận nhiều box. Đầu ra của phần này là ba hàm tự viết qua bộ kiểm tra, hình so sánh detector và bảng latency bốn cấu hình. Làm theo thứ tự 1A → 1B → 1C vì phép so sánh cuối dùng batched_nms của bạn.
+
+Trong notebook, ô 🧩 TODO là nơi thay dấu ...; giữ nguyên tên hàm, tham số và các lệnh check_*. Sau khi sửa, nhấn Shift + Enter để định nghĩa lại hàm; nếu chưa chạy, các ô sau vẫn dùng code cũ. Trả lời 2–4 câu vào chuỗi Q1 đến Q12, rồi chạy ô trả lời.
+Đọc shape và quy ước tọa độ ở 1A
+
+Bounding box là hình chữ nhật bao đối tượng; shape mô tả kích thước tensor. Faster R-CNN trả boxes, labels, scores: vị trí, nhãn lớp và điểm tin cậy. Output thô YOLO26 có 4 tọa độ và 80 điểm lớp ở mỗi vị trí dự đoán. Số vị trí chưa phải số người.
+
+Một box có thể viết bằng hai góc xyxy, góc trên trái kèm kích thước xywh, hoặc tâm kèm kích thước chuẩn hóa cxcywh. Bạn phải đọc đúng quy ước trước khi vẽ hay tính diện tích. Ô minh họa cố tình diễn giải sai cùng bốn con số để tạo box đỏ lệch, cho bạn thấy lỗi tọa độ ngay trên ảnh.
+
+    1. Chạy ba ô code trong 1A. Trước ô raw_forward, tự dự đoán số vị trí từ ba tầng feature có stride 8, 16, 32 như câu hỏi trong notebook.
+    2. Đọc các shape được in: README ghi (1, 84, 8400) với ảnh 640×640 và (1, 84, 6300) với bus.jpg sau letterbox. Đối chiếu hai trường hợp để phân biệt kích thước ảnh đầu vào với số dự đoán.
+    3. Quan sát hình box xanh và đỏ, rồi trả lời Q1 ngay dưới câu hỏi. Phần tình huống của Q1 yêu cầu tự suy ra chiều nhầm quy ước từ hướng lệch đã mô tả; đừng chép tên quy ước mà chưa kiểm tra hướng dịch.
+
+Sang 1B khi bạn đọc được ý nghĩa các chiều và nhận ra nguyên nhân box lệch. Giữ output để đối chiếu Q1.
+Tự viết ba hàm ở 1B
+
+IoU đo phần giao chia cho phần hợp của hai box. Hàm box_iou(a, b) nhận hai tập box dạng xyxy, shape (N, 4) và (M, 4), rồi trả bảng (N, M). Mỗi phần tử là một cặp so sánh; không gộp toàn bộ box thành một giá trị. NMS dùng bảng này để giữ box điểm cao và loại dự đoán trùng. batched_nms bổ sung điều kiện cùng class để một box người không loại box xe chỉ vì chúng chồng nhau.
+
+    1. Điền bốn chỗ trong box_iou, theo chú thích diện tích → góc giao → kích thước giao → tỷ lệ giao/hợp. Chạy check_box_iou() có sẵn; không thay phần tự viết bằng torchvision.ops.
+    2. Khi hàm trên đạt, điền hai chỗ trong nms. Kết quả phải là chỉ số các box được giữ, kiểu LongTensor, theo score giảm dần. Kiểm tra cả trường hợp IoU đúng bằng ngưỡng: notebook chỉ loại khi IoU lớn hơn ngưỡng.
+    3. Điền hai chỗ trong batched_nms. Dùng cách dịch box theo class đã mô tả trong notebook và giữ nguyên thứ tự box; chỉ số trả về vẫn phải trỏ vào tập đầu vào.
+    4. Chạy ô gate("1B"). Chỉ chuyển sang 1C khi đọc được ✅ Mục 1B xong, hoặc đã chủ động chọn cơ chế phao theo hướng dẫn bên dưới.
+
+Sau khi tự thử, nếu còn ❌, đọc tên phép thử trước khi sửa. Hai box rời nhau mà IoU khác 0 thì xem lại kích thước phần giao; kết quả sai shape thì xem cách broadcast giữa hai tập box. Nếu nms sai thứ tự, kiểm tra danh sách chỉ số thay vì đổi tọa độ. Nếu batched_nms loại cả box khác class, kiểm tra bước dịch theo class.
+
+Ví dụ kiểm chứng có ba box A, B, C: IoU(A, B) = 0.3333; ngưỡng NMS 0.3 giữ A và C, còn 0.5 giữ cả ba. Bộ kiểm tra còn đối chiếu với thư viện trên dữ liệu ngẫu nhiên; một hình đúng chưa đủ chứng minh hàm đạt.
+Khi kẹt quá ba phút, mở gợi ý trong notebook. Hết thời gian mục 1B, repo cho phép dùng gate("1B", lifeline=True) để đi tiếp. Hàm mượn phao được ghi trạng thái lifeline và không có điểm ở tiêu chí tương ứng. Muốn lấy lại điểm, hoàn thành và chạy lại ô TODO; đừng sửa file báo cáo để đổi trạng thái.
+So sánh hai head và đo thời gian ở 1C
+
+Notebook dùng hai đối tượng yolo và yolo_e2e riêng. Theo cấu hình phiên bản đã khóa, nms=False chuyển sang head one-to-one và lựa chọn đó được giữ cho các lần gọi sau trên cùng đối tượng. Giữ cách tách này để phép so sánh thực sự đo hai cấu hình. Head one-to-many tạo nhiều dự đoán cho một đối tượng; NMS xử lý các dự đoán trùng trước khi đếm.
+
+    1. Chạy ô tạo ba hình ở 1C. Đối chiếu kết quả tham khảo trong README: 51 → 5 → 5 box, NMS của bạn và Ultralytics cùng giữ 5 box, gồm 4 người và 1 xe buýt.
+    2. Chạy ô bench và LATENCY. Kiểm tra bảng đủ bốn dòng: hai head ở hai mức conf=0.25 và conf=0.001; mỗi dòng có preprocess, inference, postprocess và số box.
+    3. Trả lời Q2 từ bảng của chính bạn và Q3 từ tình huống ngưỡng NMS trong notebook. Dẫn đúng cột thời gian đang so sánh; không lấy số mili giây từ máy khác làm kết quả của mình.
+
+Hàm đo có warm-up rồi lấy trung bình 30 lần. Latency phụ thuộc máy nên không có một giá trị thời gian cố định để chép. Phần này hoàn thành khi ba hàm đạt kiểm tra, bảng có đủ cấu hình và Q1–Q3 đã được lưu. Nếu không làm bonus 1D, chuyển sang Phần 2; ô vẽ PR sẽ ghi rõ bỏ qua khi average_precision chưa đạt.
+
+Tạo mask và xuất nhãn YOLO-seg bằng SAM 2.1
+
+Ở Phần 2 — Segmentation, bạn chuyển từ hình chữ nhật bao đối tượng sang các pixel thuộc đối tượng. Phần này dùng lại ảnh bus.jpg và kết quả detector, rồi tạo file autolabel/bus.txt. File chỉ được coi là hợp lệ sau khi đọc ngược polygon thành mask và đối chiếu với mask SAM; nhìn thấy một file .txt chưa chứng minh nhãn đúng.
+
+Semantic segmentation gán class cho từng pixel, còn instance segmentation tách mask cho từng đối tượng. Phân biệt này quyết định cách đếm người: các pixel cùng class chưa tự chứa thông tin người nào là người nào. Trong 2A, notebook đặt hai kiểu đầu ra cạnh nhau để bạn kiểm tra điều đó trước khi viết hàm xử lý mask.
+Quan sát semantic và instance ở 2A
+
+    1. Chạy hai ô 2A. Đọc shape bản đồ semantic và tập mask instance trước khi nhìn hình. Mask của Mask R-CNN được lọc bằng score và chuyển từ xác suất sang giá trị boolean.
+    2. Quan sát số vùng liên thông của class person, số người do Mask R-CNN đếm và các lớp xuất hiện trong box xe buýt. README ghi nhận 7 vùng liên thông dù ảnh có 4 người, cùng việc nhiều pixel xe buýt được gán train.
+    3. Trả lời Q4: dùng quan sát để giải thích khả năng đếm thiếu, đếm thừa, vai trò của panoptic segmentation và sự nhầm class ở xe buýt.
+
+Hai hiện tượng trong README là kết quả cần phân tích của bài, không phải lý do để thay dataset hay đổi model. Phân biệt lỗi triển khai của bạn với dự đoán sai của một model có sẵn giúp bạn biết nên sửa code hay ghi nhận hạn chế trong câu trả lời.
+Hoàn thành ba hàm chuyển đổi ở 2B
+
+Mask ở đây là mảng boolean: pixel thuộc đối tượng mang giá trị đúng. mask_iou nhận hai tập (N, H, W) và (M, H, W), trả bảng (N, M) giống ý tưởng của box_iou, nhưng diện tích được đếm bằng pixel. Notebook yêu cầu duỗi mỗi mask rồi dùng nhân ma trận để tính giao giữa mọi cặp; giữ cách tổ chức này khi điền code.
+
+Polygon là chuỗi đỉnh (x, y) mô tả đường bao. polygon_to_mask nhận tọa độ pixel, còn mask_to_yolo_seg xuất tọa độ chuẩn hóa về [0, 1]. Đây là hai miền tọa độ khác nhau: khi ghi nhãn, x chia W và y chia H; khi đọc lại, nhân trở lại với đúng W và H. Mảng ảnh lại được truy cập theo hàng, cột, tức [y, x].
+
+    1. Điền ba chỗ trong mask_iou, rồi chạy ô chứa check_mask_iou(). Đọc kiểm tra shape và ví dụ hai hình vuông lệch nhau; kết quả tham khảo của ví dụ là IoU = 0.1429.
+    2. Điền một chỗ trong polygon_to_mask và hai chỗ trong mask_to_yolo_seg. Giữ bước làm tròn tọa độ, đơn giản hóa contour và định dạng chuỗi đã có sẵn.
+    3. Chạy hai hàm kiểm tra chuyển đổi rồi ô gate("2B"). Bộ kiểm tra xem kiểu dữ liệu, tọa độ, contour lớn nhất và độ khớp sau vòng mask → polygon → mask; rubric yêu cầu round-trip IoU > 0.95.
+    4. Chạy ô ghép mask YOLO26n-seg với Mask R-CNN bằng Hungarian matching. Đọc bảng và hình trước khi trả lời Q5 về độ thô của biên mask và rủi ro ghép cặp tham lam.
+
+Sau lần tự thử, nếu hình nhãn bị co giãn hoặc lệch, kiểm tra thứ tự W, H trước. Nếu mask có mảnh nhỏ mà polygon lại bao mảnh đó, xem cách chọn contour: notebook chọn contour có diện tích lớn nhất, không mặc định lấy phần tử đầu. Cách này cũng có nghĩa bạn đang giữ một đường bao ngoài lớn nhất, không lưu mọi mảnh rời của mask.
+
+Hungarian matching trong ô áp dụng ghép một-một để tối đa tổng IoU. Bảng README có 5 dòng, các IoU khoảng 0.84–0.94; đây là mức đồng thuận giữa hai model trên ảnh, không phải điểm so với nhãn thật. Đừng diễn giải bảng này thành độ chính xác tuyệt đối của segmentation.
+Dùng prompt và xuất file ở 2C
+
+SAM 2.1 nhận prompt để xác định vùng cần tách. Notebook thử hai điểm trong cùng box người: A ở tâm, B ở 80% chiều cao; sau đó dùng toàn bộ box của detector làm prompt. Bạn cần quan sát mask thay đổi ra sao dù cả hai điểm đều nằm trong một box, vì kết quả này ảnh hưởng cách tạo nhãn tự động.
+
+    1. Chạy ô đầu 2C chứa SAM("sam2.1_t.pt"). So sánh ba hình prompt điểm A, điểm B và prompt box; đọc diện tích mask và IoU đi kèm. README ghi A gần toàn bộ người, IoU khoảng 0.99; B có thể chỉ là một mảnh nhỏ, IoU khoảng 0.00.
+    2. Chạy ô tiếp theo để dùng mask_to_yolo_seg ghi autolabel/bus.txt. Mỗi dòng bắt đầu bằng class, tiếp theo là các cặp tọa độ đỉnh chuẩn hóa. Với kết quả tham khảo của ảnh, file có 5 dòng.
+    3. Quan sát hình nhãn được đọc lại từ file và dòng ✅ autolabel/bus.txt hợp lệ. Hàm check_autolabel(ref_masks=masks_sam) có sẵn kiểm tra định dạng, số dòng, khoảng tọa độ và độ khớp polygon với mask SAM.
+    4. Trả lời Q6 từ hai thử nghiệm prompt và cân nhắc trong notebook về dùng SAM trực tiếp hay dùng để tạo nhãn cho model nhỏ.
+
+Bạn hoàn thành pha này khi ba hàm đạt, Q4–Q6 đã trả lời, file nhãn hợp lệ và hình đọc lại bám theo người cùng xe buýt. Giữ file ở autolabel/bus.txt trong lúc làm lab: ô cuối sẽ tự sao chép nó vào submission/autolabel/bus.txt. Không tự chuyển file trước khi notebook hoàn tất.
+
+Đánh giá keypoint và thử luật phát hiện ngã
+
+Ở Phần 3 — Keypoints và Pose, đầu ra bạn cần là hai hàm oks, joint_angle qua kiểm tra và kết quả thử luật trên ảnh gốc, ảnh xoay. Keypoint là điểm có tên và thứ tự cố định, chẳng hạn vai, khuỷu tay, cổ tay. Cùng tọa độ nhưng gắn sai tên sẽ tạo một tư thế khác; vì vậy cần đọc bảng tên điểm trước khi tính góc hay đánh giá sai số.
+
+Notebook dùng zidane.jpg để so sánh Keypoint R-CNN với YOLO26n-pose, sau đó dùng bus.jpg cho luật nghiêng thân. Bạn tiếp tục chạy từ trên xuống để tái sử dụng mô hình, ảnh và các hàm tiện ích. Không thay ảnh thử nghiệm ở bước này vì các câu hỏi yêu cầu đối chiếu đúng hiện tượng trong notebook.
+Đọc tọa độ và độ tin cậy ở 3A
+
+Keypoint R-CNN trong bài suy ra điểm từ heatmap, còn YOLO26n-pose hồi quy tọa độ trực tiếp. Hai model đều cho 17 điểm theo thứ tự COCO, nhưng không thể dùng chung cách đọc điểm tin cậy. keypoints_scores của Keypoint R-CNN là logit của heatmap, không phải xác suất [0, 1]; YOLO trả confidence riêng cho từng keypoint. Đây là lý do notebook dùng các điều kiện hiển thị khác nhau.
+
+    1. Chạy hai ô 3A với cấu hình ban đầu KP_THR = 2.0. Đọc bảng tọa độ, tên 17 điểm và hai hình. README ghi shape tọa độ Keypoint R-CNN là (2, 17, 3), YOLO26n-pose là (2, 17, 2).
+    2. Đổi KP_THR thành -100 ngay trong ô vẽ, rồi chạy lại ô đó. Đối chiếu điểm đầu gối, mắt cá được hiển thị với ảnh gốc: các bộ phận này nằm ngoài khung ảnh, nên việc model vẫn tạo tọa độ cần được giải thích.
+    3. Trả lời Q7 bằng vị trí bạn quan sát và mối liên hệ với phép lấy argmax trên heatmap. Phân biệt “có một tọa độ dự đoán” với “điểm đó đủ tin cậy để sử dụng”.
+
+Sau thử nghiệm, bạn cần nhận ra tác động của ngưỡng hiển thị, không chỉ thấy có thêm các nét nối. Khi sang tính góc, notebook cũng kiểm tra confidence của các điểm cần dùng, thay vì tính trên mọi điểm được trả về.
+Viết OKS và đọc đồ thị ở 3B
+
+OKS đánh giá độ khớp giữa keypoint dự đoán và nhãn thật, ký hiệu GT trong notebook. Hàm oks nhận hai mảng tọa độ (K, 2), diện tích đối tượng area, độ dung sai sigmas và mặt nạ vis cho điểm có nhãn. Kết quả là một số tổng hợp từ các điểm có nhãn; điểm không có nhãn không tham gia trung bình.
+
+Trong công thức của bài, area đã là diện tích, tức s²; không bình phương thêm. k được định nghĩa bằng 2 * sigmas. Cùng một sai số pixel, kết quả còn phụ thuộc kích thước đối tượng và điểm đang xét. Điều này giải thích vì sao một lỗi định vị giống nhau có thể ảnh hưởng khác nhau ở người nhỏ, người lớn, mắt hoặc hông.
+
+    1. Điền ba chỗ trong oks theo chú thích: bình phương khoảng cách từng điểm, độ giống theo công thức, rồi lấy trung bình trên các điểm có nhãn. Chạy ô có check_oks() trước khi chạy thí nghiệm.
+    2. Đọc kết quả đối chiếu với kpt_iou của Ultralytics và trường hợp bỏ qua điểm không có nhãn. Khi đạt, chạy gate("3B").
+    3. Chạy ô thí nghiệm có ba kích thước người 40×80, 100×200 và 250×500. Đọc vị trí các đường OKS đi qua mức 0.5, rồi so với biểu đồ từng keypoint ở bên phải.
+    4. Trả lời Q8 từ đồ thị của mình, gồm sai số tương ứng, ý nghĩa của sigma và trường hợp người chỉ cao khoảng 80 pixel.
+
+Nếu kiểm tra còn sai sau lần tự thử, đọc gợi ý lỗi để phân biệt quên bình phương khoảng cách, bình phương thừa diện tích, dùng sigma thay cho k, hoặc lấy trung bình cả điểm không có nhãn. Không sửa hệ số chỉ để ép một ví dụ trùng số; hàm còn được dùng để phân tích tiger-pose ở Phần 4.
+
+Dòng tham khảo trong repo là Lệch 8 px: mắt còn 0.53, hông còn 0.97. Đây là độ giống riêng từng điểm trong phép thử, không phải mAP của cả model. Kết thúc 3B, bạn cần có hàm đạt và đọc được ảnh hưởng của kích thước lên đồ thị trước khi dùng OKS xếp hạng ảnh lỗi.
+Viết góc khớp và quan sát luật ở 3C
+
+Hàm joint_angle(a, b, c) trả góc theo độ tại đỉnh b. Hai vector phải cùng xuất phát từ đỉnh này. Phần đổi từ cosine sang góc đã được viết sẵn, gồm chặn giá trị trong [-1, 1] để tránh sai số số học. Bạn chỉ hoàn thành các chỗ còn thiếu, giữ đúng ý nghĩa tham số vì hàm được dùng cho cả khuỷu tay lẫn góc nghiêng thân.
+
+    1. Điền hai chỗ trong joint_angle, rồi chạy check_joint_angle() và gate("3C"). Bộ kiểm tra dùng các góc 90°, 180°, 45° và 0°.
+    2. Chạy ô áp dụng. Đọc góc khuỷu tay trên zidane.jpg, sau đó xem số người, confidence và độ nghiêng trên bus.jpg cùng bản xoay 90°.
+    3. Trả lời Q9 đủ ba ý của notebook: tình huống báo nhầm/bỏ sót, số người phát hiện sau xoay và thành phần cần thêm cho hệ thống cảnh báo thực tế.
+
+Luật trong code dùng FALL_DEG = 60, KPT_CONF = 0.5. Hướng thân nối trung điểm hai vai với trung điểm hai hông; nếu vai hoặc hông thiếu tin cậy, output ghi không kết luận. Hãy giữ cả các dòng này khi đọc kết quả, vì “không kết luận” không đồng nghĩa với “đứng”.
+
+README ghi thân ở ảnh gốc nghiêng khoảng 1°, còn ảnh xoay cho 83–94° và chỉ phát hiện 3 người. Dùng đây làm mốc đối chiếu, rồi trả lời theo output thực tế. Pha hoàn tất khi hai hàm đạt, hình và các dòng kết luận hiện ra, Q7–Q9 đã lưu. Bạn sẽ dùng lại oks để đánh giá dữ liệu custom ở bước tiếp theo.
+
+Sửa flip_idx, fine-tune và phân tích lỗi trên tiger-pose
+
+Ở Phần 4, bạn dùng tiger-pose gồm 210 ảnh train, 53 ảnh val, một class và 12 keypoint. Đầu ra cần có là FLIP_IDX đúng quy ước giải phẫu, lần train trên GPU đủ 40 epoch với imgsz=640, bảng mAP và phân tích lỗi. Phần này còn kiểm tra cách đọc metric: một bảng điểm tốt cần được đặt cạnh chính những ảnh mà model dự đoán kém.
+
+Train là tập dùng để cập nhật model, val là tập dùng để đánh giá. Notebook bắt đầu bằng thống kê hướng quay ở cả hai tập vì phép lật ngang khi huấn luyện có liên quan trực tiếp đến tên keypoint trái/phải. Nếu chỉ chạy lệnh train mà chưa hiểu nhãn sau khi lật, bạn có thể không nhận ra vấn đề mà các câu Q10–Q12 muốn kiểm tra.
+Xác định cặp đối xứng ở 4A
+
+flip_idx là ánh xạ thứ tự keypoint khi lật ảnh. Theo quy ước bài yêu cầu, các cặp left_* và right_* hoán đổi, còn các điểm trên trục giữa giữ nguyên. Danh sách đồng nhất [0, 1, …, 11] trong YAML gốc không thực hiện hoán đổi. Bạn cần sửa theo bảng tên điểm thực tế, không suy ra chỉ số từ vị trí màu trên một hình.
+
+    1. Chạy ô đầu Phần 4 để giải phóng các model trước đó và in kpt_shape, flip_idx, tên 12 keypoint. Quan sát ảnh ví dụ với số thứ tự; màu đỏ là right_*, xanh là left_*, cam là điểm giữa.
+    2. Chạy ô thống kê facing. README ghi train có 210 ảnh quay phải, 0 quay trái; val có 53 quay phải, 0 quay trái. Dùng kết quả của mình khi cân nhắc Q10 về tập val và tình huống triển khai.
+    3. Sửa FLIP_IDX ở ô TODO, rồi chạy check_flip_idx(). Giữ bốn điểm giữa và tìm từng cặp trong tám vị trí còn lại theo bảng tên. Ví dụ đã cho trong notebook: chỉ số 4 và 7 là một cặp; hãy tự xác định các cặp còn lại.
+    4. Chạy ô gate("4A") ngay sau đó. Ô này ghi tiger-pose-anat.yaml và vẽ ba hình so sánh; kiểm tra hình thứ ba đổi nhãn các chân phía camera sang màu xanh.
+
+Nếu phép kiểm tra chưa đạt, đối chiếu tên tại từng vị trí trong danh sách, rồi chạy lại ô TODO. Khi đã sửa thành công, cần chạy lại cả ô ghi YAML trước lúc train: chỉ sửa biến mà bỏ qua ô ghi file có thể khiến cấu hình trên đĩa chưa phản ánh thay đổi. Dấu hiệu qua 4A là ✅ FLIP_IDX đạt, qua gate và có hình minh họa đúng quy ước.
+Train và đọc bảng đánh giá ở 4B
+
+Notebook khởi tạo từ yolo26n-pose.pt, vốn dùng 17 keypoint người. Phần mô tả của repo cho biết backbone và neck được giữ, phần keypoint của head được khởi tạo lại cho 12 điểm. Bạn không cần tự tạo kiến trúc khác; nhiệm vụ là dùng cấu hình vừa ghi và kiểm tra lần chạy có đúng điều kiện của rubric.
+
+Trong ô train, EPOCHS, IMGSZ phụ thuộc biến GPU: có GPU thì 40 và 640, không có thì 3 và 320. Chế độ sau chỉ dùng thử pipeline. Vì vậy nhìn thấy chương trình chạy đến cuối chưa đủ; cần xem cả môi trường, số epoch và kích thước ảnh trong bảng kết quả.
+
+    1. Chạy ô train 4B sau khi 4A đạt. Giữ data="tiger-pose-anat.yaml", batch=16, seed=0 và các thiết lập có sẵn. Trong lúc chờ, hoàn thành và chạy ô trả lời Q10.
+    2. Chạy ô đánh giá ngay sau train. Kiểm tra bảng RESULT_4B có 40 epoch, imgsz 640 và các cột Box mAP50-95, Pose mAP50, Pose mAP50-95, thời gian train.
+    3. Quan sát đường cong huấn luyện nếu results.png được hiển thị. Đối chiếu Pose mAP50 với mốc trên 0.9 được README ghi nhận, đồng thời lưu đúng số đo của mình.
+
+Mốc mAP trong README là kết quả tham khảo; tiêu chí chấm 4B ghi yêu cầu train xong trên GPU, đủ 40 epoch, imgsz 640 và có bảng mAP. Đừng biến mốc tham khảo thành lý do sửa báo cáo. Nếu bị CUDA out of memory, repo hướng dẫn Runtime → Restart session and run all; nếu vẫn lỗi, đổi batch=16 thành batch=8 trong ô train.
+Đọc sáu ảnh lỗi và trả lời Q11–Q12
+
+Ô phân tích dùng chính oks của bạn để chấm từng ảnh val rồi lấy sáu ảnh tệ nhất. Với tiger-pose, nó dùng SIGMA_TIGER = 1/12 cho tất cả điểm và hệ số diện tích có sẵn trong code. Giữ các thiết lập này khi làm phần bắt buộc để kết quả nhất quán với notebook. Không dùng nguyên bộ sigma 17 điểm người cho 12 điểm hổ.
+
+    1. Chạy ô phân tích sau bảng mAP. Đọc OKS trung bình, số ảnh không phát hiện được hổ và số trường hợp nghi đảo trái/phải. Một ảnh không có dự đoán cũng là lỗi cần xem, không tự loại khỏi nhận xét.
+    2. Xem sáu hình: dấu tròn là nhãn thật, dấu X là dự đoán, đoạn vàng nối sai số. Đọc tên file và vùng cơ thể ở từng hình để xác định hai kiểu lỗi thực sự xuất hiện.
+    3. Đối chiếu biểu đồ sai số theo keypoint, rồi trả lời Q11. Với mỗi kiểu lỗi, nêu ảnh hoặc chi tiết quan sát được và một cách khắc phục cụ thể. Rubric không cho điểm câu trả lời chung chung không gắn với hình của bạn.
+    4. Trả lời Q12 về việc dùng chung sigma cho 12 keypoint và cách ước lượng sigma trên dataset custom. Căn cứ vào ý nghĩa sigma đã kiểm chứng ở Phần 3, thay vì chỉ nhắc lại mAP.
+
+Pha này hoàn tất khi có FLIP_IDX đạt, bảng kết quả train đúng cấu hình GPU, sáu ảnh val lỗi, biểu đồ từng keypoint và Q10–Q12 đã lưu. Nếu không làm bonus, chuyển đến bước kiểm tra và nộp bài; không cần train model đồng nhất ở 4C để hoàn thành điểm lõi.
+
+Thực hiện các mục bonus nếu chọn làm thêm
+
+Các mục dưới đây là tùy chọn, không làm không giảm điểm lõi. Bạn tiếp tục trên notebook hiện tại để dùng lại hàm, dữ liệu và model. Mục 1D kiểm chứng cách tính AP; 4C kiểm tra điều gì xảy ra khi hướng quay ở tập đánh giá thay đổi. Đọc yêu cầu rubric trước khi chạy vì chỉ tạo được một bảng chưa chắc đã đủ bằng chứng cho toàn bộ điểm bonus.
+Hoàn thành average_precision ở 1D
+
+AP tổng hợp đường precision–recall. Precision tính phần dự đoán đúng trong số đã xét, recall tính phần nhãn thật đã được tìm thấy. Notebook cho ví dụ 10 ground-truth và 15 dự đoán với nhãn đúng/sai, yêu cầu sắp theo confidence rồi tính cộng dồn. Hàm không lấy trung bình trực tiếp các precision đang dao động; nó dùng envelope và 101 mức recall như phần code đã viết sẵn.
+
+    1. Quay lại 1D, đọc dữ liệu ví dụ và điền ba chỗ trong average_precision: recall, precision và envelope. Giữ phần sắp xếp cùng vòng lấy mẫu 101 điểm.
+    2. Chạy check_average_precision(). Đọc cả kiểm tra dự đoán hoàn hảo, không có dự đoán đúng và kết quả không đổi khi xáo thứ tự đầu vào.
+    3. Chạy ô vẽ PR ngay dưới. Kiểm tra ✅ average_precision đạt và AP khoảng 0.535 như ví dụ repo; giữ hình này trong output để có bằng chứng cho 5 điểm bonus.
+
+Nếu kết quả phụ thuộc thứ tự đầu vào, xem lại bước sắp theo confidence. Nếu hình có đường precision nhưng không đạt kiểm tra AP, đối chiếu envelope và phần recall chưa đạt tới. Với ví dụ trong notebook, recall dừng ở 0.7; phần code có sẵn xử lý các mức recall còn lại. Sau khi sửa 1D, bạn vẫn cần chạy lại ô cuối tạo báo cáo để trạng thái mới được ghi vào ket_qua.json.
+So sánh hai model trên val gốc và val lật gương ở 4C
+
+Mục 4C dùng lại model đã train đúng quy ước giải phẫu, tạo val lật ngang và đổi nhãn theo FLIP_IDX. Phép thử thay đổi hướng quay để đánh giá điều mà thống kê 4A đã chỉ ra. Đây là phép so sánh giữa hai model trên hai tập val, nên cần phân biệt chạy riêng model hiện tại với chạy đầy đủ cấu hình để lấy bonus.
+
+    1. Trong ô 4C, đặt RUN_4C = True. Để đáp ứng rubric so sánh hai model, đặt thêm TRAIN_IDENTITY = True; việc này tốn thêm một lần train tương tự 4B.
+    2. Chạy ô và đọc bảng RESULT_4C. Khi làm đầy đủ, bảng phải có model flip_idx giải phẫu, model flip_idx đồng nhất cùng hai cột Pose mAP50-95 trên val gốc và val lật gương.
+    3. Viết đoạn giải thích metric nào đã che lỗi, dựa trên chính bảng so sánh. Theo yêu cầu nộp của repo, đặt báo cáo bonus trong submission/ khi đóng gói; giữ cả output thí nghiệm trong notebook.
+
+Không nhầm Pose mAP50-95 của bảng 4C với Pose mAP50 trong mốc tham khảo 4B. Nếu chỉ bật RUN_4C, notebook vẫn có thể tạo kết quả cho model hiện tại, nhưng rubric 10 điểm yêu cầu so sánh cả hai model và có giải thích. Dấu hiệu hoàn thành là đủ hai dòng model, hai điều kiện đánh giá và lập luận gắn với số liệu.
+Chọn bài tập về nhà theo nguồn
+
+README đưa ba hướng: mở rộng 4C với kpt_oks_sigmas, auto-label dữ liệu riêng, hoặc export ONNX để đo latency. Rubric tách 4C thành mục 10 điểm; mục 5 điểm bài tập về nhà ghi hai lựa chọn auto-label + fine-tune hoặc ONNX. Khi tự kiểm điểm, dùng đúng cách phân chia này, không tự tính một thí nghiệm 4C thành hai mục điểm.
+
+    1. Chọn một hướng trong bài tập về nhà của notebook. Nếu chọn auto-label, thực hiện trên 20–30 ảnh, sửa tay ca sai, fine-tune yolo26n-seg.pt rồi báo cáo mask mAP. Nếu chọn ONNX, dùng lệnh export có trong đề và đo latency CPU của hai head ở conf 0.001 và 0.25.
+
+model.export(format="onnx")
+
+Chép
+
+    1. Viết báo cáo ngắn từ kết quả đã làm và đặt trong submission/. Các bài mở rộng này không có walkthrough triển khai đầy đủ trong repo; phần hướng dẫn ở đây giữ đúng phạm vi đề, không thêm dataset, lệnh chạy hay ngưỡng đạt chưa được giảng viên quy định.
+
+Hoàn tất lựa chọn bonus rồi trở lại notebook để tạo báo cáo cuối. Chỉ ghi nhận phần đã chạy và có bằng chứng; các mục chưa làm vẫn giữ là tùy chọn.
+
+Kiểm tra, đóng gói và nộp URL vào VLearn
+
+Giữ cách nộp theo repo giảng viên: notebook còn output cùng thư mục submission/ đặt ở gốc repo GitHub public của bạn. Trên VLearn chỉ nộp một URL repo GitHub. Phần đính link notebook vào báo cáo bên dưới là hướng dẫn bổ sung của Codelab.
+
+    1. Chọn Runtime → Restart session and run all. Chờ chạy hết, xử lý các ô lỗi; kiểm tra Q1–Q12, output và lần train GPU đủ 40 epoch, imgsz=640.
+    2. Đọc checklist final_report(): các dòng bắt buộc cần ✅. Có submission.zip chưa chứng minh bài đạt vì hàm vẫn tạo gói khi thiếu mục. Kiểm tra câu hỏi chỉ xác nhận bỏ placeholder và có ít nhất 30 ký tự; nội dung được chấm theo rubric.
+    3. Tải notebook bằng File → Download → Download .ipynb. Tải submission.zip từ cột thư mục Colab rồi giải nén. Giữ tên notebook và output; có thể dùng tùy chọn tải:
+
+final_report(download=True)
+
+Chép
+
+    1. Đưa notebook và submission/ lên repo public của bạn tên Track04-Day18-2D-perception-detection-segmentation-keypoints (fork hoặc repo mới). Giữ cấu trúc file theo repo gốc như bên dưới; báo cáo bonus, nếu có, cũng nằm trong submission/.
+
+Track04-Day18-2D-perception-detection-segmentation-keypoints/
+├── lab_2d_perception_student.ipynb
+└── submission/
+    ├── ket_qua.json
+    └── autolabel/
+        └── bus.txt
+
+Chép
+
+    1. Kiểm tra repo có đủ các file trên và hoàn thành phần bổ sung link notebook bên dưới. Dán URL repo GitHub public vào phần nộp bài Ngày 18 trên VLearn. Không mở PR. Giữ repo public đến khi có điểm; theo rubric, repo private được 0 điểm.
+
+Bổ sung link notebook vào báo cáo trong submission
+
+Sau khi đưa bài lên GitHub, mở file lab_2d_perception_student.ipynb trong repo của bạn và sao chép URL trang file. Đây là link trực tiếp tới notebook đã chạy, còn output; không dùng link notebook gốc của giảng viên.
+
+Thêm dòng sau vào báo cáo trong submission/, rồi điền URL vừa sao chép:
+
+Link notebook đã chạy:
+
+Chép
+
+Nếu đã có báo cáo, thêm dòng này vào báo cáo đó. Nếu chưa có, tạo submission/report.md để ghi link. Đây là file bạn bổ sung thủ công sau khi giải nén; final_report() không tự tạo báo cáo này. Giữ nguyên ket_qua.json vì đó là kết quả kiểm tra do notebook xuất.
+
+Lưu báo cáo lên repo và mở link notebook trong cửa sổ ẩn danh để kiểm tra người chấm truy cập được. Khi đổi tên file hoặc nhánh chứa notebook, cập nhật link trong báo cáo. Không cần nộp riêng link notebook trên VLearn: người chấm mở URL repo đã nộp và lấy link từ báo cáo.
+
+Trước khi nộp, kiểm tra kết quả ở submission/ket_qua.json, tránh lồng thành submission/submission/. Nếu sửa bài, chạy lại và cập nhật kết quả lên GitHub; giữ phần link đã bổ sung trong báo cáo.
+Đối chiếu rubric của giảng viên
+
+Rubric gồm 100 điểm lõi + 20 điểm bonus, chấm từ output notebook và submission/ket_qua.json. Hàm dùng phao nhận 0 điểm ở tiêu chí tương ứng; các tiêu chí khác không bị ảnh hưởng.
+#	Mục	Tiêu chí	Điểm
+1	1B	box_iou qua bộ kiểm tra (khớp torchvision.ops.box_iou)	8
+2	1B	nms qua bộ kiểm tra (khớp torchvision.ops.nms ở ngưỡng 0.3 / 0.5 / 0.7)	10
+3	1B	batched_nms qua bộ kiểm tra (class-aware, khớp torchvision)	6
+4	1C	Bảng latency đủ 4 cấu hình: one-to-many + NMS và one-to-one, ở conf 0.25 và 0.001	5
+5	2B	mask_iou qua bộ kiểm tra (nhân ma trận, ra đúng shape (N, M))	8
+6	2B	polygon_to_mask và mask_to_yolo_seg qua bộ kiểm tra (round-trip IoU > 0.95)	6
+7	2C	submission/autolabel/bus.txt hợp lệ: đúng định dạng YOLO-seg, toạ độ trong [0, 1], polygon khớp mask SAM	5
+8	3B	oks qua bộ kiểm tra (khớp kpt_iou của Ultralytics, xử lý đúng keypoint không có nhãn)	8
+9	3C	joint_angle qua bộ kiểm tra	4
+10	4A	FLIP_IDX đúng theo quy ước giải phẫu	4
+11	4B	Fine-tune YOLO26n-pose trên tiger-pose chạy xong trên GPU (40 epoch, imgsz 640) và có bảng mAP	6
+12	Q1–Q12	12 câu hỏi, mỗi câu 2 điểm: trả lời đúng trọng tâm, có dẫn số liệu từ lần chạy của chính bạn khi câu hỏi yêu cầu	24
+13	Toàn bài	Tái lập được: Restart session and run all không ô nào lỗi, notebook nộp còn nguyên output	6
+		Tổng điểm lõi	100
+
+Bonus — tùy chọn:
+Tiêu chí	Điểm
+1D — average_precision qua bộ kiểm tra và vẽ được đường PR của ví dụ trên slide	5
+4C — bảng so sánh hai model (flip_idx giải phẫu và đồng nhất) trên val gốc và val lật gương, kèm một đoạn giải thích metric nào đã che lỗi	10
+Một bài tập về nhà ở cuối notebook (auto-label + fine-tune yolo26n-seg, hoặc export ONNX và đo latency), có báo cáo ngắn trong submission/	5
+Tổng bonus	20
